@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use crate::meter::MeterReading;
-use crate::probe::{open_port, send_init};
+use crate::probe::{open_port, send_init, baud_rate_from_char, negotiate_baud_rate, parse_baud_char, BAUD_RATE};
 
 /// Holds an open serial connection to a meter for repeated readings.
 pub struct MeterConnection {
@@ -13,6 +13,8 @@ pub struct MeterConnection {
     device_id: String,
     /// Whether the first telegram is already in progress (from probing).
     first_read_primed: bool,
+    /// The negotiated baud rate for reading telegrams (300 if no negotiation).
+    negotiated_baud: u32,
 }
 
 impl MeterConnection {
@@ -25,32 +27,61 @@ impl MeterConnection {
             port,
             device_id: device_id.to_string(),
             first_read_primed: false,
+            negotiated_baud: BAUD_RATE,
         })
     }
 
     /// Create from a port that was already initialized by the probe.
-    /// The device ID line was already consumed during probing.
-    pub fn from_probe(port: Box<dyn serialport::SerialPort>, device_id: &str) -> Self {
+    /// The device ID line was already consumed during probing, and baud rate
+    /// was already negotiated.
+    pub fn from_probe(port: Box<dyn serialport::SerialPort>, device_id: &str, negotiated_baud: u32) -> Self {
         Self {
             port,
             device_id: device_id.to_string(),
             first_read_primed: true,
+            negotiated_baud,
         }
     }
 
-    /// Read one telegram from the meter. On subsequent calls, sends a new
-    /// init sequence to request the next telegram.
+    /// Read one telegram from the meter. On subsequent calls, switches back
+    /// to 300 baud, sends a new init sequence, negotiates baud rate, then
+    /// reads the telegram at the higher baud rate.
     pub fn read(&mut self) -> Result<MeterReading> {
         if self.first_read_primed {
             self.first_read_primed = false;
-            info!("Reading first telegram (already primed)");
+            info!("Reading first telegram (already primed at {} baud)", self.negotiated_baud);
             let reader = BufReader::new(&mut *self.port);
             read_telegram(reader, &self.device_id, true)
         } else {
+            // Switch back to 300 baud for the init sequence
+            if self.negotiated_baud != BAUD_RATE {
+                self.port.set_baud_rate(BAUD_RATE)
+                    .context("Failed to reset baud rate to 300")?;
+            }
+
             info!("Sending init sequence for new reading");
             send_init(&mut *self.port)?;
+
+            // Read identification line and negotiate baud rate
+            let mut id_line = String::new();
+            {
+                let mut reader = BufReader::new(&mut *self.port);
+                reader.read_line(&mut id_line)
+                    .context("Failed to read identification line")?;
+            }
+            debug!("Identification: {}", id_line.trim());
+
+            if let Some(bc) = parse_baud_char(id_line.trim()) {
+                if let Some(rate) = baud_rate_from_char(bc) {
+                    if rate > BAUD_RATE {
+                        negotiate_baud_rate(&mut *self.port, bc, rate)?;
+                        self.negotiated_baud = rate;
+                    }
+                }
+            }
+
             let reader = BufReader::new(&mut *self.port);
-            read_telegram(reader, &self.device_id, false)
+            read_telegram(reader, &self.device_id, true)
         }
     }
 }

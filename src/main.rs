@@ -27,7 +27,7 @@ fn main() -> Result<()> {
         None => {
             info!("No port specified, probing for {} ...", config.device_id);
             let result = probe::find_meter_port(&config.device_id)?;
-            protocol::MeterConnection::from_probe(result.port, &result.device_id)
+            protocol::MeterConnection::from_probe(result.port, &result.device_id, result.negotiated_baud)
         }
     };
 
