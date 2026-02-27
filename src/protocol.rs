@@ -63,7 +63,7 @@ impl MeterConnection {
             read_telegram(reader, &self.device_id, true)
         } else {
             // Give the meter time to finish processing before the next request
-            std::thread::sleep(Duration::from_secs(3));
+            std::thread::sleep(Duration::from_secs(5));
 
             // Switch back to 300 baud for the init sequence
             if self.negotiated_baud != BAUD_RATE {
@@ -177,6 +177,7 @@ fn parse_obis_line(line: &str, reading: &mut MeterReading) {
 
     let value_str = raw_value
         .replace("*kWh", "")
+        .replace("*kW", "")
         .replace("*V", "")
         .replace("*A", "")
         .replace("*Hz", "");
@@ -186,15 +187,25 @@ fn parse_obis_line(line: &str, reading: &mut MeterReading) {
     match code {
         "1-0:1.8.0" => {
             if let Some(v) = parsed {
-                reading.consumption_ht_kwh = v;
+                reading.consumption_total_kwh = v;
+            }
+        }
+        "1-0:1.8.1" => {
+            if let Some(v) = parsed {
+                reading.consumption_t1_kwh = v;
             }
         }
         "1-0:1.8.2" => {
             if let Some(v) = parsed {
-                reading.consumption_nt_kwh = v;
+                reading.consumption_t2_kwh = v;
             }
         }
         "1-0:2.8.0" => {
+            if let Some(v) = parsed {
+                reading.production_total_kwh = v;
+            }
+        }
+        "1-0:2.8.1" => {
             if let Some(v) = parsed {
                 reading.production_t1_kwh = v;
             }
@@ -239,6 +250,21 @@ fn parse_obis_line(line: &str, reading: &mut MeterReading) {
                 reading.frequency = v;
             }
         }
+        "1-0:21.7.0" => {
+            if let Some(v) = parsed {
+                reading.phase1_power = v * 1000.0;
+            }
+        }
+        "1-0:41.7.0" => {
+            if let Some(v) = parsed {
+                reading.phase2_power = v * 1000.0;
+            }
+        }
+        "1-0:61.7.0" => {
+            if let Some(v) = parsed {
+                reading.phase3_power = v * 1000.0;
+            }
+        }
         _ => {
             debug!("Ignoring OBIS code: {}", code);
         }
@@ -251,24 +277,38 @@ mod tests {
     use crate::meter::MeterReading;
 
     #[test]
-    fn parse_consumption_ht() {
+    fn parse_consumption_total() {
         let mut r = MeterReading::default();
         parse_obis_line("1-0:1.8.0*255(0002686.675*kWh)", &mut r);
-        assert!((r.consumption_ht_kwh - 2686.675).abs() < 0.001);
+        assert!((r.consumption_total_kwh - 2686.675).abs() < 0.001);
     }
 
     #[test]
-    fn parse_consumption_nt() {
+    fn parse_consumption_t1() {
+        let mut r = MeterReading::default();
+        parse_obis_line("1-0:1.8.1*255(0001200.000*kWh)", &mut r);
+        assert!((r.consumption_t1_kwh - 1200.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_consumption_t2() {
         let mut r = MeterReading::default();
         parse_obis_line("1-0:1.8.2*255(0002686.675*kWh)", &mut r);
-        assert!((r.consumption_nt_kwh - 2686.675).abs() < 0.001);
+        assert!((r.consumption_t2_kwh - 2686.675).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_production_total() {
+        let mut r = MeterReading::default();
+        parse_obis_line("1-0:2.8.0*255(0009354.299*kWh)", &mut r);
+        assert!((r.production_total_kwh - 9354.299).abs() < 0.001);
     }
 
     #[test]
     fn parse_production_t1() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:2.8.0*255(0009354.299*kWh)", &mut r);
-        assert!((r.production_t1_kwh - 9354.299).abs() < 0.001);
+        parse_obis_line("1-0:2.8.1*255(0004000.000*kWh)", &mut r);
+        assert!((r.production_t1_kwh - 4000.0).abs() < 0.001);
     }
 
     #[test]
@@ -311,21 +351,32 @@ mod tests {
     fn parse_without_star_suffix() {
         let mut r = MeterReading::default();
         parse_obis_line("1-0:1.8.0(0011404.409*kWh)", &mut r);
-        assert!((r.consumption_ht_kwh - 11404.409).abs() < 0.001);
+        assert!((r.consumption_total_kwh - 11404.409).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_instantaneous_power() {
+        let mut r = MeterReading::default();
+        parse_obis_line("1-0:21.7.0*255(0.150*kW)", &mut r);
+        parse_obis_line("1-0:41.7.0*255(0.020*kW)", &mut r);
+        parse_obis_line("1-0:61.7.0*255(0.100*kW)", &mut r);
+        assert!((r.phase1_power - 150.0).abs() < 0.01);
+        assert!((r.phase2_power - 20.0).abs() < 0.01);
+        assert!((r.phase3_power - 100.0).abs() < 0.01);
     }
 
     #[test]
     fn unknown_code_ignored() {
         let mut r = MeterReading::default();
         parse_obis_line("0-0:C.1.6*255(FDF5)", &mut r);
-        assert_eq!(r.consumption_ht_kwh, 0.0);
+        assert_eq!(r.consumption_total_kwh, 0.0);
     }
 
     #[test]
     fn malformed_line_ignored() {
         let mut r = MeterReading::default();
         parse_obis_line("garbage without parens", &mut r);
-        assert_eq!(r.consumption_ht_kwh, 0.0);
+        assert_eq!(r.consumption_total_kwh, 0.0);
     }
 
     #[test]
@@ -345,21 +396,21 @@ mod tests {
 1-0:51.7.0*255(0.10*A)\r\n\
 1-0:71.7.0*255(0.64*A)\r\n\
 1-0:14.7.0*255(50.03*Hz)\r\n\
+1-0:21.7.0*255(0.150*kW)\r\n\
+1-0:41.7.0*255(0.020*kW)\r\n\
+1-0:61.7.0*255(0.100*kW)\r\n\
 !\r\n";
         let reader = std::io::BufReader::new(telegram.as_bytes());
         let reading = read_telegram(reader, "ISk5MT174", false).unwrap();
         assert_eq!(reading.device_id, "ISk5MT174-0001");
-        assert!((reading.consumption_ht_kwh - 2686.675).abs() < 0.001);
-        assert!((reading.production_t1_kwh - 9354.299).abs() < 0.001);
+        assert!((reading.consumption_total_kwh - 2686.675).abs() < 0.001);
+        assert!((reading.production_total_kwh - 9354.299).abs() < 0.001);
         assert!((reading.phase1_voltage - 231.3).abs() < 0.01);
         assert!((reading.phase1_current - 0.98).abs() < 0.001);
         assert!((reading.frequency - 50.03).abs() < 0.001);
-        // 231.3 * 0.98 = 226.674 → rounded to 226.67
-        assert!((reading.phase1_power - 226.67).abs() < 0.01);
-        // 233.2 * 0.10 = 23.32
-        assert!((reading.phase2_power - 23.32).abs() < 0.01);
-        // 231.4 * 0.64 = 148.096 → rounded to 148.1
-        assert!((reading.phase3_power - 148.1).abs() < 0.01);
-        assert!((reading.total_power - 398.09).abs() < 0.01);
+        assert!((reading.phase1_power - 150.0).abs() < 0.01);
+        assert!((reading.phase2_power - 20.0).abs() < 0.01);
+        assert!((reading.phase3_power - 100.0).abs() < 0.01);
+        assert!((reading.total_power - 270.0).abs() < 0.01);
     }
 }
