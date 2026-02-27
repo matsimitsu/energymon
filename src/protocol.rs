@@ -7,41 +7,65 @@ use std::time::Duration;
 use crate::meter::MeterReading;
 use crate::probe::{open_port, send_init};
 
-/// Open a serial port from scratch, send init, and read the full telegram.
-/// Used when --port is specified (no probing).
-pub fn read_meter(port_path: &str, device_id: &str, timeout: Duration) -> Result<MeterReading> {
-    info!("Opening {} for meter reading", port_path);
-
-    let mut port = open_port(port_path, timeout)?;
-    send_init(&mut *port)?;
-
-    let reader = BufReader::new(&mut *port);
-    read_telegram(reader, device_id, None)
+/// Holds an open serial connection to a meter for repeated readings.
+pub struct MeterConnection {
+    port: Box<dyn serialport::SerialPort>,
+    device_id: String,
+    /// Whether the first telegram is already in progress (from probing).
+    first_read_primed: bool,
 }
 
-/// Continue reading from a port that was already initialized by the probe.
-/// The device ID line was already consumed during probing.
-pub fn read_meter_probed(
-    port: Box<dyn serialport::SerialPort>,
-    probed_device_id: &str,
-) -> Result<MeterReading> {
-    info!("Continuing reading from probed port");
+impl MeterConnection {
+    /// Open a fresh connection and send the first init sequence.
+    pub fn open(port_path: &str, device_id: &str, timeout: Duration) -> Result<Self> {
+        info!("Opening {} for meter reading", port_path);
+        let mut port = open_port(port_path, timeout)?;
+        send_init(&mut *port)?;
+        Ok(Self {
+            port,
+            device_id: device_id.to_string(),
+            first_read_primed: false,
+        })
+    }
 
-    let reader = BufReader::new(port);
-    read_telegram(reader, "", Some(probed_device_id.to_string()))
+    /// Create from a port that was already initialized by the probe.
+    /// The device ID line was already consumed during probing.
+    pub fn from_probe(port: Box<dyn serialport::SerialPort>, device_id: &str) -> Self {
+        Self {
+            port,
+            device_id: device_id.to_string(),
+            first_read_primed: true,
+        }
+    }
+
+    /// Read one telegram from the meter. On subsequent calls, sends a new
+    /// init sequence to request the next telegram.
+    pub fn read(&mut self) -> Result<MeterReading> {
+        if self.first_read_primed {
+            self.first_read_primed = false;
+            info!("Reading first telegram (already primed)");
+            let reader = BufReader::new(&mut *self.port);
+            read_telegram(reader, &self.device_id, true)
+        } else {
+            info!("Sending init sequence for new reading");
+            send_init(&mut *self.port)?;
+            let reader = BufReader::new(&mut *self.port);
+            read_telegram(reader, &self.device_id, false)
+        }
+    }
 }
 
 /// Read and parse the meter telegram from a BufReader.
-/// If `confirmed_device_id` is Some, the device ID line was already consumed.
+/// If `device_id_consumed` is true, the device ID line was already read (e.g. during probing).
 fn read_telegram(
     mut reader: impl BufRead,
     device_id: &str,
-    confirmed_device_id: Option<String>,
+    device_id_consumed: bool,
 ) -> Result<MeterReading> {
     let mut reading = MeterReading::default();
 
-    if let Some(id) = &confirmed_device_id {
-        reading.device_id = id.clone();
+    if device_id_consumed {
+        reading.device_id = device_id.to_string();
     }
 
     loop {
@@ -59,12 +83,9 @@ fn read_telegram(
 
         // Device identification line (e.g. "/ISk5MT174-0001")
         if trimmed.starts_with('/') {
-            if confirmed_device_id.is_some() {
-                // Unexpected — probe already consumed this
-                debug!("Ignoring extra identification line");
-            } else if trimmed.contains(device_id) {
+            if trimmed.contains(device_id) {
                 reading.device_id = trimmed.trim_start_matches('/').to_string();
-            } else {
+            } else if !device_id_consumed {
                 bail!("Unexpected device: {}", trimmed);
             }
             continue;
@@ -250,7 +271,7 @@ mod tests {
 1-0:14.7.0*255(50.03*Hz)\r\n\
 !\r\n";
         let reader = std::io::BufReader::new(telegram.as_bytes());
-        let reading = read_telegram(reader, "ISk5MT174", None).unwrap();
+        let reading = read_telegram(reader, "ISk5MT174", false).unwrap();
         assert_eq!(reading.device_id, "ISk5MT174-0001");
         assert!((reading.consumption_ht_kwh - 2686.675).abs() < 0.001);
         assert!((reading.production_t1_kwh - 9354.299).abs() < 0.001);
