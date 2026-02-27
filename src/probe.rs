@@ -12,14 +12,23 @@ pub const STOP_BITS: serialport::StopBits = serialport::StopBits::One;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Open a serial port with IEC 62056-21 settings.
+/// Sets DTR and RTS high to match pyserial defaults — the Weidmann IR head
+/// uses DTR to power its IR LED.
 pub fn open_port(path: &str, timeout: Duration) -> Result<Box<dyn serialport::SerialPort>> {
-    serialport::new(path, BAUD_RATE)
+    let mut port = serialport::new(path, BAUD_RATE)
         .data_bits(DATA_BITS)
         .parity(PARITY)
         .stop_bits(STOP_BITS)
         .timeout(timeout)
         .open()
-        .with_context(|| format!("Failed to open serial port {}", path))
+        .with_context(|| format!("Failed to open serial port {}", path))?;
+
+    port.write_data_terminal_ready(true)
+        .context("Failed to set DTR")?;
+    port.write_request_to_send(true)
+        .context("Failed to set RTS")?;
+
+    Ok(port)
 }
 
 /// Probe a single port: send init sequence, check if first response line
