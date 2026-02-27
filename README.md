@@ -4,7 +4,9 @@ Reads an ISk5MT174 electricity meter via an IR optical head (Weidmann USB IR Kop
 
 ## Features
 
-- Reads energy consumption, production, and phase voltages via OBIS codes
+- Continuous reading loop for real-time monitoring
+- IEC 62056-21 baud rate negotiation (300 -> 9600 baud) for faster reads
+- Reads energy consumption, production, phase voltages, currents, frequency, and calculates per-phase power
 - Publishes JSON payload to an MQTT broker
 - Auto-probes `/dev/ttyUSB*` ports to find the correct meter when multiple IR heads are connected
 
@@ -38,16 +40,22 @@ energymon --mqtt-host 192.168.1.10 --mqtt-topic home/energy
 ```json
 {
   "device_id": "ISk5MT174-0001",
-  "time": "12:00:54",
-  "date": "20-07-03",
-  "consumption_ht_kwh": 11404.409,
-  "consumption_nt_kwh": 23813.725,
-  "production_t1_kwh": 15608.962,
-  "production_t2_kwh": 900.569,
-  "phase1_voltage": 230.1,
-  "phase2_voltage": 229.8,
-  "phase3_voltage": 231.2,
-  "timestamp": "2026-02-27 14:30:22.123456"
+  "consumption_ht_kwh": 2686.748,
+  "consumption_nt_kwh": 2686.748,
+  "production_t1_kwh": 9354.299,
+  "production_t2_kwh": 9354.299,
+  "phase1_voltage": 231.6,
+  "phase2_voltage": 232.2,
+  "phase3_voltage": 230.7,
+  "phase1_current": 0.98,
+  "phase2_current": 0.25,
+  "phase3_current": 0.63,
+  "frequency": 49.99,
+  "phase1_power": 226.97,
+  "phase2_power": 58.05,
+  "phase3_power": 145.34,
+  "total_power": 430.36,
+  "timestamp": "2026-02-27 17:26:26.675439"
 }
 ```
 
@@ -64,7 +72,7 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-Pre-built static binaries are available from [GitHub Actions](../../actions).
+Pre-built static binaries are available from [GitHub Releases](../../releases).
 
 ## Serial port permissions
 
