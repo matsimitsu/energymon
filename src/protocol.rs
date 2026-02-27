@@ -1,26 +1,48 @@
 use anyhow::{bail, Context, Result};
 use chrono::Local;
 use log::{debug, info};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use crate::meter::MeterReading;
-use crate::probe::{open_port, IEC_INIT_SEQUENCE};
+use crate::probe::{open_port, send_init};
 
-/// Open a serial port, send the IEC 62056-21 init sequence, read and parse
-/// the complete meter telegram, and return a MeterReading.
+/// Open a serial port from scratch, send init, and read the full telegram.
+/// Used when --port is specified (no probing).
 pub fn read_meter(port_path: &str, device_id: &str, timeout: Duration) -> Result<MeterReading> {
     info!("Opening {} for meter reading", port_path);
 
     let mut port = open_port(port_path, timeout)?;
+    send_init(&mut *port)?;
 
-    port.write_all(IEC_INIT_SEQUENCE)?;
-    port.flush()?;
-    std::thread::sleep(Duration::from_millis(500));
+    let reader = BufReader::new(&mut *port);
+    read_telegram(reader, device_id, None)
+}
 
-    let mut reader = BufReader::new(&mut *port);
+/// Continue reading from a port that was already initialized by the probe.
+/// The device ID line was already consumed during probing.
+pub fn read_meter_probed(
+    port: Box<dyn serialport::SerialPort>,
+    probed_device_id: &str,
+) -> Result<MeterReading> {
+    info!("Continuing reading from probed port");
+
+    let reader = BufReader::new(port);
+    read_telegram(reader, "", Some(probed_device_id.to_string()))
+}
+
+/// Read and parse the meter telegram from a BufReader.
+/// If `confirmed_device_id` is Some, the device ID line was already consumed.
+fn read_telegram(
+    mut reader: impl BufRead,
+    device_id: &str,
+    confirmed_device_id: Option<String>,
+) -> Result<MeterReading> {
     let mut reading = MeterReading::default();
-    let mut device_confirmed = false;
+
+    if let Some(id) = &confirmed_device_id {
+        reading.device_id = id.clone();
+    }
 
     loop {
         let mut line = String::new();
@@ -37,8 +59,10 @@ pub fn read_meter(port_path: &str, device_id: &str, timeout: Duration) -> Result
 
         // Device identification line (e.g. "/ISk5MT174-0001")
         if trimmed.starts_with('/') {
-            if trimmed.contains(device_id) {
-                device_confirmed = true;
+            if confirmed_device_id.is_some() {
+                // Unexpected — probe already consumed this
+                debug!("Ignoring extra identification line");
+            } else if trimmed.contains(device_id) {
                 reading.device_id = trimmed.trim_start_matches('/').to_string();
             } else {
                 bail!("Unexpected device: {}", trimmed);
@@ -58,7 +82,7 @@ pub fn read_meter(port_path: &str, device_id: &str, timeout: Duration) -> Result
         parse_obis_line(trimmed, &mut reading);
     }
 
-    if !device_confirmed {
+    if reading.device_id.is_empty() {
         bail!("Never received device identification line");
     }
 
@@ -214,7 +238,6 @@ mod tests {
     fn unknown_code_ignored() {
         let mut r = MeterReading::default();
         parse_obis_line("C.1.6(FDF5)", &mut r);
-        // Should not panic or change any values
         assert_eq!(r.consumption_ht_kwh, 0.0);
     }
 
@@ -223,5 +246,30 @@ mod tests {
         let mut r = MeterReading::default();
         parse_obis_line("garbage without parens", &mut r);
         assert_eq!(r.consumption_ht_kwh, 0.0);
+    }
+
+    #[test]
+    fn read_full_telegram() {
+        let telegram = "\
+/ISk5MT174-0001\r\n\
+\r\n\
+0.0.0(00339188)\r\n\
+0.8.1(120054)\r\n\
+0.8.2(1260227)\r\n\
+1-0:1.8.0(0011404.409*kWh)\r\n\
+1-0:1.8.2(0023813.725*kWh)\r\n\
+1-0:2.8.0(0015608.962*kWh)\r\n\
+1-0:2.8.2(0000900.569*kWh)\r\n\
+1-0:32.7.0(230.1*V)\r\n\
+1-0:52.7.0(229.8*V)\r\n\
+1-0:72.7.0(231.2*V)\r\n\
+!\r\n";
+        let reader = std::io::BufReader::new(telegram.as_bytes());
+        let reading = read_telegram(reader, "ISk5MT174", None).unwrap();
+        assert_eq!(reading.device_id, "ISk5MT174-0001");
+        assert_eq!(reading.time, "12:00:54");
+        assert_eq!(reading.date, "26-02-27");
+        assert!((reading.consumption_ht_kwh - 11404.409).abs() < 0.001);
+        assert!((reading.phase1_voltage - 230.1).abs() < 0.01);
     }
 }

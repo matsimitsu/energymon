@@ -31,36 +31,54 @@ pub fn open_port(path: &str, timeout: Duration) -> Result<Box<dyn serialport::Se
     Ok(port)
 }
 
-/// Probe a single port: send init sequence, check if first response line
-/// contains the expected device identifier.
-fn probe_port(path: &str, device_id: &str) -> Result<bool> {
-    debug!("Probing port {}", path);
-    let mut port = open_port(path, PROBE_TIMEOUT)?;
-
+/// Send the IEC 62056-21 init sequence and wait for the meter to wake up.
+pub fn send_init(port: &mut dyn serialport::SerialPort) -> Result<()> {
     port.write_all(IEC_INIT_SEQUENCE)?;
     port.flush()?;
     std::thread::sleep(Duration::from_millis(500));
+    Ok(())
+}
+
+/// Result of a successful probe: the open port and the device ID that was read.
+pub struct ProbeResult {
+    pub port: Box<dyn serialport::SerialPort>,
+    pub device_id: String,
+}
+
+/// Probe a single port: send init sequence, check if first response line
+/// contains the expected device identifier. Returns the open port on match
+/// so the caller can continue reading the telegram.
+fn probe_port(path: &str, device_id: &str) -> Result<Option<ProbeResult>> {
+    debug!("Probing port {}", path);
+    let mut port = open_port(path, PROBE_TIMEOUT)?;
+    send_init(&mut *port)?;
 
     let mut reader = BufReader::new(&mut *port);
     let mut first_line = String::new();
     reader.read_line(&mut first_line)?;
 
-    let found = first_line.contains(device_id);
-    if found {
-        info!("Found {} on port {}", device_id, path);
+    if first_line.contains(device_id) {
+        let found_id = first_line.trim().trim_start_matches('/').to_string();
+        info!("Found {} on port {}", found_id, path);
+        // Drop the BufReader to reclaim the port
+        drop(reader);
+        Ok(Some(ProbeResult {
+            port,
+            device_id: found_id,
+        }))
     } else {
         debug!(
             "Port {} responded with: {:?} (not target device)",
             path,
             first_line.trim()
         );
+        Ok(None)
     }
-    Ok(found)
 }
 
 /// Enumerate available serial ports, probe each ttyUSB port, and return
-/// the path of the port that responds with the expected device ID.
-pub fn find_meter_port(device_id: &str) -> Result<String> {
+/// the open port that responds with the expected device ID.
+pub fn find_meter_port(device_id: &str) -> Result<ProbeResult> {
     let ports = serialport::available_ports().context("Failed to enumerate serial ports")?;
 
     let usb_ports: Vec<_> = ports
@@ -80,8 +98,8 @@ pub fn find_meter_port(device_id: &str) -> Result<String> {
 
     for port_info in &usb_ports {
         match probe_port(&port_info.port_name, device_id) {
-            Ok(true) => return Ok(port_info.port_name.clone()),
-            Ok(false) => continue,
+            Ok(Some(result)) => return Ok(result),
+            Ok(None) => continue,
             Err(e) => {
                 warn!("Error probing {}: {}", port_info.port_name, e);
                 continue;

@@ -15,24 +15,17 @@ fn main() -> Result<()> {
     let config = config::Config::parse();
     info!("Starting energymon");
 
-    // Determine which serial port to use
-    let port_path = match &config.port {
+    let reading = match &config.port {
         Some(path) => {
             info!("Using specified port: {}", path);
-            path.clone()
+            protocol::read_meter(path, &config.device_id, Duration::from_secs(config.timeout_secs))?
         }
         None => {
             info!("No port specified, probing for {} ...", config.device_id);
-            probe::find_meter_port(&config.device_id)?
+            let result = probe::find_meter_port(&config.device_id)?;
+            protocol::read_meter_probed(result.port, &result.device_id)?
         }
     };
-
-    // Read the meter
-    let reading = protocol::read_meter(
-        &port_path,
-        &config.device_id,
-        Duration::from_secs(config.timeout_secs),
-    )?;
 
     // Publish to MQTT
     mqtt::publish_reading(&config, &reading)?;
