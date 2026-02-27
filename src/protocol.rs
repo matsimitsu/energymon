@@ -53,11 +53,18 @@ impl MeterConnection {
             let reader = BufReader::new(&mut *self.port);
             read_telegram(reader, &self.device_id, true)
         } else {
+            // Give the meter time to finish processing before the next request
+            std::thread::sleep(Duration::from_secs(1));
+
             // Switch back to 300 baud for the init sequence
             if self.negotiated_baud != BAUD_RATE {
                 self.port.set_baud_rate(BAUD_RATE)
                     .context("Failed to reset baud rate to 300")?;
             }
+
+            // Discard any stray bytes left in the serial buffer
+            self.port.clear(serialport::ClearBuffer::Input)
+                .context("Failed to clear serial input buffer")?;
 
             info!("Sending init sequence for new reading");
             send_init(&mut *self.port)?;
