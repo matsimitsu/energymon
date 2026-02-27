@@ -86,6 +86,7 @@ fn read_telegram(
         bail!("Never received device identification line");
     }
 
+    reading.calculate_power();
     reading.timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
 
     info!("Reading complete: {:?}", reading);
@@ -95,70 +96,51 @@ fn read_telegram(
 /// Parse a single OBIS data line like `1-0:1.8.0(0011404.409*kWh)` and
 /// populate the corresponding field in MeterReading.
 fn parse_obis_line(line: &str, reading: &mut MeterReading) {
-    let (code, raw_value) = match (line.find('('), line.find(')')) {
+    let (raw_code, raw_value) = match (line.find('('), line.find(')')) {
         (Some(open), Some(close)) if open < close => (&line[..open], &line[open + 1..close]),
         _ => return,
     };
 
-    let value_str = raw_value.replace("*kWh", "").replace("*V", "");
+    // Strip *255 or similar suffixes from the OBIS code (e.g. "1-0:1.8.0*255" → "1-0:1.8.0")
+    let code = raw_code.split('*').next().unwrap_or(raw_code);
+
+    let value_str = raw_value.replace("*kWh", "").replace("*V", "").replace("*A", "").replace("*Hz", "");
+
+    let parsed: Option<f64> = value_str.trim().parse().ok();
 
     match code {
-        "0.8.1" => {
-            // Time: "120054" → "12:00:54"
-            if value_str.len() >= 6 {
-                reading.time = format!(
-                    "{}:{}:{}",
-                    &value_str[0..2],
-                    &value_str[2..4],
-                    &value_str[4..6]
-                );
-            }
-        }
-        "0.8.2" => {
-            // Date: "1200703" → "20-07-03"
-            if value_str.len() >= 7 {
-                reading.date = format!(
-                    "{}-{}-{}",
-                    &value_str[1..3],
-                    &value_str[3..5],
-                    &value_str[5..7]
-                );
-            }
-        }
         "1-0:1.8.0" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.consumption_ht_kwh = v;
-            }
+            if let Some(v) = parsed { reading.consumption_ht_kwh = v; }
         }
         "1-0:1.8.2" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.consumption_nt_kwh = v;
-            }
+            if let Some(v) = parsed { reading.consumption_nt_kwh = v; }
         }
         "1-0:2.8.0" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.production_t1_kwh = v;
-            }
+            if let Some(v) = parsed { reading.production_t1_kwh = v; }
         }
         "1-0:2.8.2" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.production_t2_kwh = v;
-            }
+            if let Some(v) = parsed { reading.production_t2_kwh = v; }
         }
         "1-0:32.7.0" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.phase1_voltage = v;
-            }
+            if let Some(v) = parsed { reading.phase1_voltage = v; }
         }
         "1-0:52.7.0" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.phase2_voltage = v;
-            }
+            if let Some(v) = parsed { reading.phase2_voltage = v; }
         }
         "1-0:72.7.0" => {
-            if let Ok(v) = value_str.trim().parse() {
-                reading.phase3_voltage = v;
-            }
+            if let Some(v) = parsed { reading.phase3_voltage = v; }
+        }
+        "1-0:31.7.0" => {
+            if let Some(v) = parsed { reading.phase1_current = v; }
+        }
+        "1-0:51.7.0" => {
+            if let Some(v) = parsed { reading.phase2_current = v; }
+        }
+        "1-0:71.7.0" => {
+            if let Some(v) = parsed { reading.phase3_current = v; }
+        }
+        "1-0:14.7.0" => {
+            if let Some(v) = parsed { reading.frequency = v; }
         }
         _ => {
             debug!("Ignoring OBIS code: {}", code);
@@ -174,70 +156,71 @@ mod tests {
     #[test]
     fn parse_consumption_ht() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:1.8.0(0011404.409*kWh)", &mut r);
-        assert!((r.consumption_ht_kwh - 11404.409).abs() < 0.001);
+        parse_obis_line("1-0:1.8.0*255(0002686.675*kWh)", &mut r);
+        assert!((r.consumption_ht_kwh - 2686.675).abs() < 0.001);
     }
 
     #[test]
     fn parse_consumption_nt() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:1.8.2(0023813.725*kWh)", &mut r);
-        assert!((r.consumption_nt_kwh - 23813.725).abs() < 0.001);
+        parse_obis_line("1-0:1.8.2*255(0002686.675*kWh)", &mut r);
+        assert!((r.consumption_nt_kwh - 2686.675).abs() < 0.001);
     }
 
     #[test]
     fn parse_production_t1() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:2.8.0(0015608.962*kWh)", &mut r);
-        assert!((r.production_t1_kwh - 15608.962).abs() < 0.001);
+        parse_obis_line("1-0:2.8.0*255(0009354.299*kWh)", &mut r);
+        assert!((r.production_t1_kwh - 9354.299).abs() < 0.001);
     }
 
     #[test]
     fn parse_production_t2() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:2.8.2(0000900.569*kWh)", &mut r);
-        assert!((r.production_t2_kwh - 900.569).abs() < 0.001);
+        parse_obis_line("1-0:2.8.2*255(0009354.299*kWh)", &mut r);
+        assert!((r.production_t2_kwh - 9354.299).abs() < 0.001);
     }
 
     #[test]
-    fn parse_voltage_phase1() {
+    fn parse_voltage() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:32.7.0(230.1*V)", &mut r);
-        assert!((r.phase1_voltage - 230.1).abs() < 0.01);
+        parse_obis_line("1-0:32.7.0*255(231.3*V)", &mut r);
+        parse_obis_line("1-0:52.7.0*255(233.2*V)", &mut r);
+        parse_obis_line("1-0:72.7.0*255(231.4*V)", &mut r);
+        assert!((r.phase1_voltage - 231.3).abs() < 0.01);
+        assert!((r.phase2_voltage - 233.2).abs() < 0.01);
+        assert!((r.phase3_voltage - 231.4).abs() < 0.01);
     }
 
     #[test]
-    fn parse_voltage_phase2() {
+    fn parse_current() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:52.7.0(229.8*V)", &mut r);
-        assert!((r.phase2_voltage - 229.8).abs() < 0.01);
+        parse_obis_line("1-0:31.7.0*255(0.98*A)", &mut r);
+        parse_obis_line("1-0:51.7.0*255(0.10*A)", &mut r);
+        parse_obis_line("1-0:71.7.0*255(0.64*A)", &mut r);
+        assert!((r.phase1_current - 0.98).abs() < 0.001);
+        assert!((r.phase2_current - 0.10).abs() < 0.001);
+        assert!((r.phase3_current - 0.64).abs() < 0.001);
     }
 
     #[test]
-    fn parse_voltage_phase3() {
+    fn parse_frequency() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:72.7.0(231.2*V)", &mut r);
-        assert!((r.phase3_voltage - 231.2).abs() < 0.01);
+        parse_obis_line("1-0:14.7.0*255(50.03*Hz)", &mut r);
+        assert!((r.frequency - 50.03).abs() < 0.001);
     }
 
     #[test]
-    fn parse_time() {
+    fn parse_without_star_suffix() {
         let mut r = MeterReading::default();
-        parse_obis_line("0.8.1(120054)", &mut r);
-        assert_eq!(r.time, "12:00:54");
-    }
-
-    #[test]
-    fn parse_date() {
-        let mut r = MeterReading::default();
-        parse_obis_line("0.8.2(1200703)", &mut r);
-        assert_eq!(r.date, "20-07-03");
+        parse_obis_line("1-0:1.8.0(0011404.409*kWh)", &mut r);
+        assert!((r.consumption_ht_kwh - 11404.409).abs() < 0.001);
     }
 
     #[test]
     fn unknown_code_ignored() {
         let mut r = MeterReading::default();
-        parse_obis_line("C.1.6(FDF5)", &mut r);
+        parse_obis_line("0-0:C.1.6*255(FDF5)", &mut r);
         assert_eq!(r.consumption_ht_kwh, 0.0);
     }
 
@@ -253,23 +236,33 @@ mod tests {
         let telegram = "\
 /ISk5MT174-0001\r\n\
 \r\n\
-0.0.0(00339188)\r\n\
-0.8.1(120054)\r\n\
-0.8.2(1260227)\r\n\
-1-0:1.8.0(0011404.409*kWh)\r\n\
-1-0:1.8.2(0023813.725*kWh)\r\n\
-1-0:2.8.0(0015608.962*kWh)\r\n\
-1-0:2.8.2(0000900.569*kWh)\r\n\
-1-0:32.7.0(230.1*V)\r\n\
-1-0:52.7.0(229.8*V)\r\n\
-1-0:72.7.0(231.2*V)\r\n\
+1-0:0.0.0*255(88381140)\r\n\
+1-0:1.8.0*255(0002686.675*kWh)\r\n\
+1-0:1.8.2*255(0002686.675*kWh)\r\n\
+1-0:2.8.0*255(0009354.299*kWh)\r\n\
+1-0:2.8.2*255(0009354.299*kWh)\r\n\
+1-0:32.7.0*255(231.3*V)\r\n\
+1-0:52.7.0*255(233.2*V)\r\n\
+1-0:72.7.0*255(231.4*V)\r\n\
+1-0:31.7.0*255(0.98*A)\r\n\
+1-0:51.7.0*255(0.10*A)\r\n\
+1-0:71.7.0*255(0.64*A)\r\n\
+1-0:14.7.0*255(50.03*Hz)\r\n\
 !\r\n";
         let reader = std::io::BufReader::new(telegram.as_bytes());
         let reading = read_telegram(reader, "ISk5MT174", None).unwrap();
         assert_eq!(reading.device_id, "ISk5MT174-0001");
-        assert_eq!(reading.time, "12:00:54");
-        assert_eq!(reading.date, "26-02-27");
-        assert!((reading.consumption_ht_kwh - 11404.409).abs() < 0.001);
-        assert!((reading.phase1_voltage - 230.1).abs() < 0.01);
+        assert!((reading.consumption_ht_kwh - 2686.675).abs() < 0.001);
+        assert!((reading.production_t1_kwh - 9354.299).abs() < 0.001);
+        assert!((reading.phase1_voltage - 231.3).abs() < 0.01);
+        assert!((reading.phase1_current - 0.98).abs() < 0.001);
+        assert!((reading.frequency - 50.03).abs() < 0.001);
+        // 231.3 * 0.98 = 226.674 → rounded to 226.67
+        assert!((reading.phase1_power - 226.67).abs() < 0.01);
+        // 233.2 * 0.10 = 23.32
+        assert!((reading.phase2_power - 23.32).abs() < 0.01);
+        // 231.4 * 0.64 = 148.096 → rounded to 148.1
+        assert!((reading.phase3_power - 148.1).abs() < 0.01);
+        assert!((reading.total_power - 398.09).abs() < 0.01);
     }
 }
