@@ -63,7 +63,7 @@ impl MeterConnection {
             read_telegram(reader, &self.device_id, true)
         } else {
             // Give the meter time to finish processing before the next request
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(Duration::from_secs(1));
 
             // Switch back to 300 baud for the init sequence
             if self.negotiated_baud != BAUD_RATE {
@@ -250,19 +250,19 @@ fn parse_obis_line(line: &str, reading: &mut MeterReading) {
                 reading.frequency = v;
             }
         }
-        "1-0:21.7.0" => {
+        "1-0:33.7.0" => {
             if let Some(v) = parsed {
-                reading.phase1_power = v * 1000.0;
+                reading.phase1_pf = v;
             }
         }
-        "1-0:41.7.0" => {
+        "1-0:53.7.0" => {
             if let Some(v) = parsed {
-                reading.phase2_power = v * 1000.0;
+                reading.phase2_pf = v;
             }
         }
-        "1-0:61.7.0" => {
+        "1-0:73.7.0" => {
             if let Some(v) = parsed {
-                reading.phase3_power = v * 1000.0;
+                reading.phase3_pf = v;
             }
         }
         _ => {
@@ -355,14 +355,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_instantaneous_power() {
+    fn parse_power_factor() {
         let mut r = MeterReading::default();
-        parse_obis_line("1-0:21.7.0*255(0.150*kW)", &mut r);
-        parse_obis_line("1-0:41.7.0*255(0.020*kW)", &mut r);
-        parse_obis_line("1-0:61.7.0*255(0.100*kW)", &mut r);
-        assert!((r.phase1_power - 150.0).abs() < 0.01);
-        assert!((r.phase2_power - 20.0).abs() < 0.01);
-        assert!((r.phase3_power - 100.0).abs() < 0.01);
+        parse_obis_line("1-0:33.7.0*255(0.950)", &mut r);
+        parse_obis_line("1-0:53.7.0*255(0.800)", &mut r);
+        parse_obis_line("1-0:73.7.0*255(0.750)", &mut r);
+        assert!((r.phase1_pf - 0.950).abs() < 0.001);
+        assert!((r.phase2_pf - 0.800).abs() < 0.001);
+        assert!((r.phase3_pf - 0.750).abs() < 0.001);
     }
 
     #[test]
@@ -381,6 +381,11 @@ mod tests {
 
     #[test]
     fn read_full_telegram() {
+        // Expected per-phase power: V × I × PF
+        // L1: 231.3 × 0.98 × 1.0 = 226.67W
+        // L2: 233.2 × 0.10 × 1.0 = 23.32W
+        // L3: 231.4 × 0.64 × 1.0 = 148.10W
+        // Total: 398.09W
         let telegram = "\
 /ISk5MT174-0001\r\n\
 \r\n\
@@ -396,9 +401,9 @@ mod tests {
 1-0:51.7.0*255(0.10*A)\r\n\
 1-0:71.7.0*255(0.64*A)\r\n\
 1-0:14.7.0*255(50.03*Hz)\r\n\
-1-0:21.7.0*255(0.150*kW)\r\n\
-1-0:41.7.0*255(0.020*kW)\r\n\
-1-0:61.7.0*255(0.100*kW)\r\n\
+1-0:33.7.0*255(1.000)\r\n\
+1-0:53.7.0*255(1.000)\r\n\
+1-0:73.7.0*255(1.000)\r\n\
 !\r\n";
         let reader = std::io::BufReader::new(telegram.as_bytes());
         let reading = read_telegram(reader, "ISk5MT174", false).unwrap();
@@ -408,9 +413,9 @@ mod tests {
         assert!((reading.phase1_voltage - 231.3).abs() < 0.01);
         assert!((reading.phase1_current - 0.98).abs() < 0.001);
         assert!((reading.frequency - 50.03).abs() < 0.001);
-        assert!((reading.phase1_power - 150.0).abs() < 0.01);
-        assert!((reading.phase2_power - 20.0).abs() < 0.01);
-        assert!((reading.phase3_power - 100.0).abs() < 0.01);
-        assert!((reading.total_power - 270.0).abs() < 0.01);
+        assert!((reading.phase1_power - 226.67).abs() < 0.1);
+        assert!((reading.phase2_power - 23.32).abs() < 0.1);
+        assert!((reading.phase3_power - 148.10).abs() < 0.1);
+        assert!((reading.total_power - 398.09).abs() < 0.1);
     }
 }

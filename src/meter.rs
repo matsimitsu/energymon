@@ -29,11 +29,17 @@ pub struct MeterReading {
     pub phase3_current: f64,
     /// Grid frequency (Hz) — OBIS 1-0:14.7.0
     pub frequency: f64,
-    /// Phase 1 real power (W) — OBIS 1-0:21.7.0
+    /// Phase 1 power factor — OBIS 1-0:33.7.0
+    pub phase1_pf: f64,
+    /// Phase 2 power factor — OBIS 1-0:53.7.0
+    pub phase2_pf: f64,
+    /// Phase 3 power factor — OBIS 1-0:73.7.0
+    pub phase3_pf: f64,
+    /// Phase 1 real power (W) — computed as V × I × PF
     pub phase1_power: f64,
-    /// Phase 2 real power (W) — OBIS 1-0:41.7.0
+    /// Phase 2 real power (W) — computed as V × I × PF
     pub phase2_power: f64,
-    /// Phase 3 real power (W) — OBIS 1-0:61.7.0
+    /// Phase 3 real power (W) — computed as V × I × PF
     pub phase3_power: f64,
     /// Total real power (W) — sum of all phases
     pub total_power: f64,
@@ -41,8 +47,14 @@ pub struct MeterReading {
 }
 
 impl MeterReading {
-    /// Calculate total real power as sum of per-phase real power readings.
+    /// Calculate per-phase and total real power from voltage, current, and power factor.
     pub fn calculate_power(&mut self) {
+        self.phase1_power =
+            (self.phase1_voltage * self.phase1_current * self.phase1_pf * 100.0).round() / 100.0;
+        self.phase2_power =
+            (self.phase2_voltage * self.phase2_current * self.phase2_pf * 100.0).round() / 100.0;
+        self.phase3_power =
+            (self.phase3_voltage * self.phase3_current * self.phase3_pf * 100.0).round() / 100.0;
         self.total_power =
             (((self.phase1_power + self.phase2_power + self.phase3_power) * 100.0).round()) / 100.0;
     }
