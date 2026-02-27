@@ -42,6 +42,7 @@ impl MeterReading {
         self.phase1_power = (self.phase1_voltage * self.phase1_current * 100.0).round() / 100.0;
         self.phase2_power = (self.phase2_voltage * self.phase2_current * 100.0).round() / 100.0;
         self.phase3_power = (self.phase3_voltage * self.phase3_current * 100.0).round() / 100.0;
-        self.total_power = (((self.phase1_power + self.phase2_power + self.phase3_power) * 100.0).round()) / 100.0;
+        self.total_power =
+            (((self.phase1_power + self.phase2_power + self.phase3_power) * 100.0).round()) / 100.0;
     }
 }

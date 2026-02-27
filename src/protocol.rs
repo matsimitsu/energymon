@@ -5,7 +5,9 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use crate::meter::MeterReading;
-use crate::probe::{open_port, send_init, baud_rate_from_char, negotiate_baud_rate, parse_baud_char, BAUD_RATE};
+use crate::probe::{
+    baud_rate_from_char, negotiate_baud_rate, open_port, parse_baud_char, send_init, BAUD_RATE,
+};
 
 /// Holds an open serial connection to a meter for repeated readings.
 pub struct MeterConnection {
@@ -34,7 +36,11 @@ impl MeterConnection {
     /// Create from a port that was already initialized by the probe.
     /// The device ID line was already consumed during probing, and baud rate
     /// was already negotiated.
-    pub fn from_probe(port: Box<dyn serialport::SerialPort>, device_id: &str, negotiated_baud: u32) -> Self {
+    pub fn from_probe(
+        port: Box<dyn serialport::SerialPort>,
+        device_id: &str,
+        negotiated_baud: u32,
+    ) -> Self {
         Self {
             port,
             device_id: device_id.to_string(),
@@ -49,21 +55,26 @@ impl MeterConnection {
     pub fn read(&mut self) -> Result<MeterReading> {
         if self.first_read_primed {
             self.first_read_primed = false;
-            info!("Reading first telegram (already primed at {} baud)", self.negotiated_baud);
+            info!(
+                "Reading first telegram (already primed at {} baud)",
+                self.negotiated_baud
+            );
             let reader = BufReader::new(&mut *self.port);
             read_telegram(reader, &self.device_id, true)
         } else {
             // Give the meter time to finish processing before the next request
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(3));
 
             // Switch back to 300 baud for the init sequence
             if self.negotiated_baud != BAUD_RATE {
-                self.port.set_baud_rate(BAUD_RATE)
+                self.port
+                    .set_baud_rate(BAUD_RATE)
                     .context("Failed to reset baud rate to 300")?;
             }
 
             // Discard any stray bytes left in the serial buffer
-            self.port.clear(serialport::ClearBuffer::Input)
+            self.port
+                .clear(serialport::ClearBuffer::Input)
                 .context("Failed to clear serial input buffer")?;
 
             info!("Sending init sequence for new reading");
@@ -73,7 +84,8 @@ impl MeterConnection {
             let mut id_line = String::new();
             {
                 let mut reader = BufReader::new(&mut *self.port);
-                reader.read_line(&mut id_line)
+                reader
+                    .read_line(&mut id_line)
                     .context("Failed to read identification line")?;
             }
             debug!("Identification: {}", id_line.trim());
@@ -163,43 +175,69 @@ fn parse_obis_line(line: &str, reading: &mut MeterReading) {
     // Strip *255 or similar suffixes from the OBIS code (e.g. "1-0:1.8.0*255" → "1-0:1.8.0")
     let code = raw_code.split('*').next().unwrap_or(raw_code);
 
-    let value_str = raw_value.replace("*kWh", "").replace("*V", "").replace("*A", "").replace("*Hz", "");
+    let value_str = raw_value
+        .replace("*kWh", "")
+        .replace("*V", "")
+        .replace("*A", "")
+        .replace("*Hz", "");
 
     let parsed: Option<f64> = value_str.trim().parse().ok();
 
     match code {
         "1-0:1.8.0" => {
-            if let Some(v) = parsed { reading.consumption_ht_kwh = v; }
+            if let Some(v) = parsed {
+                reading.consumption_ht_kwh = v;
+            }
         }
         "1-0:1.8.2" => {
-            if let Some(v) = parsed { reading.consumption_nt_kwh = v; }
+            if let Some(v) = parsed {
+                reading.consumption_nt_kwh = v;
+            }
         }
         "1-0:2.8.0" => {
-            if let Some(v) = parsed { reading.production_t1_kwh = v; }
+            if let Some(v) = parsed {
+                reading.production_t1_kwh = v;
+            }
         }
         "1-0:2.8.2" => {
-            if let Some(v) = parsed { reading.production_t2_kwh = v; }
+            if let Some(v) = parsed {
+                reading.production_t2_kwh = v;
+            }
         }
         "1-0:32.7.0" => {
-            if let Some(v) = parsed { reading.phase1_voltage = v; }
+            if let Some(v) = parsed {
+                reading.phase1_voltage = v;
+            }
         }
         "1-0:52.7.0" => {
-            if let Some(v) = parsed { reading.phase2_voltage = v; }
+            if let Some(v) = parsed {
+                reading.phase2_voltage = v;
+            }
         }
         "1-0:72.7.0" => {
-            if let Some(v) = parsed { reading.phase3_voltage = v; }
+            if let Some(v) = parsed {
+                reading.phase3_voltage = v;
+            }
         }
         "1-0:31.7.0" => {
-            if let Some(v) = parsed { reading.phase1_current = v; }
+            if let Some(v) = parsed {
+                reading.phase1_current = v;
+            }
         }
         "1-0:51.7.0" => {
-            if let Some(v) = parsed { reading.phase2_current = v; }
+            if let Some(v) = parsed {
+                reading.phase2_current = v;
+            }
         }
         "1-0:71.7.0" => {
-            if let Some(v) = parsed { reading.phase3_current = v; }
+            if let Some(v) = parsed {
+                reading.phase3_current = v;
+            }
         }
         "1-0:14.7.0" => {
-            if let Some(v) = parsed { reading.frequency = v; }
+            if let Some(v) = parsed {
+                reading.frequency = v;
+            }
         }
         _ => {
             debug!("Ignoring OBIS code: {}", code);
