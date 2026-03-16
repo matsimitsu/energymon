@@ -5,9 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use crate::meter::MeterReading;
-use crate::probe::{
-    baud_rate_from_char, negotiate_baud_rate, open_port, parse_baud_char, send_init, BAUD_RATE,
-};
+use crate::probe::{open_port, send_init};
 
 /// Holds an open serial connection to a meter for repeated readings.
 pub struct MeterConnection {
@@ -15,8 +13,6 @@ pub struct MeterConnection {
     device_id: String,
     /// Whether the first telegram is already in progress (from probing).
     first_read_primed: bool,
-    /// The negotiated baud rate for reading telegrams (300 if no negotiation).
-    negotiated_baud: u32,
 }
 
 impl MeterConnection {
@@ -29,23 +25,16 @@ impl MeterConnection {
             port,
             device_id: device_id.to_string(),
             first_read_primed: false,
-            negotiated_baud: BAUD_RATE,
         })
     }
 
     /// Create from a port that was already initialized by the probe.
-    /// The device ID line was already consumed during probing, and baud rate
-    /// was already negotiated.
-    pub fn from_probe(
-        port: Box<dyn serialport::SerialPort>,
-        device_id: &str,
-        negotiated_baud: u32,
-    ) -> Self {
+    /// The device ID line was already consumed during probing.
+    pub fn from_probe(port: Box<dyn serialport::SerialPort>, device_id: &str) -> Self {
         Self {
             port,
             device_id: device_id.to_string(),
             first_read_primed: true,
-            negotiated_baud,
         }
     }
 
@@ -55,22 +44,12 @@ impl MeterConnection {
     pub fn read(&mut self, interval: Duration) -> Result<MeterReading> {
         if self.first_read_primed {
             self.first_read_primed = false;
-            info!(
-                "Reading first telegram (already primed at {} baud)",
-                self.negotiated_baud
-            );
+            info!("Reading first telegram (already primed)");
             let reader = BufReader::new(&mut *self.port);
             read_telegram(reader, &self.device_id, true)
         } else {
             // Wait for the configured interval before the next request
             std::thread::sleep(interval);
-
-            // Switch back to 300 baud for the init sequence
-            if self.negotiated_baud != BAUD_RATE {
-                self.port
-                    .set_baud_rate(BAUD_RATE)
-                    .context("Failed to reset baud rate to 300")?;
-            }
 
             // Discard any stray bytes left in the serial buffer
             self.port
@@ -80,27 +59,8 @@ impl MeterConnection {
             info!("Sending init sequence for new reading");
             send_init(&mut *self.port)?;
 
-            // Read identification line and negotiate baud rate
-            let mut id_line = String::new();
-            {
-                let mut reader = BufReader::new(&mut *self.port);
-                reader
-                    .read_line(&mut id_line)
-                    .context("Failed to read identification line")?;
-            }
-            debug!("Identification: {}", id_line.trim());
-
-            if let Some(bc) = parse_baud_char(id_line.trim()) {
-                if let Some(rate) = baud_rate_from_char(bc) {
-                    if rate > BAUD_RATE {
-                        negotiate_baud_rate(&mut *self.port, bc, rate)?;
-                        self.negotiated_baud = rate;
-                    }
-                }
-            }
-
             let reader = BufReader::new(&mut *self.port);
-            read_telegram(reader, &self.device_id, true)
+            read_telegram(reader, &self.device_id, false)
         }
     }
 }
