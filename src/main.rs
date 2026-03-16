@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     };
 
     loop {
-        match conn.read() {
+        match conn.read(Duration::from_secs(config.interval_secs)) {
             Ok(reading) => {
                 if let Err(e) = mqtt::publish_reading(&config, &reading) {
                     error!("Failed to publish: {}", e);

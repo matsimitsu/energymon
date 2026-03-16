@@ -52,7 +52,7 @@ impl MeterConnection {
     /// Read one telegram from the meter. On subsequent calls, switches back
     /// to 300 baud, sends a new init sequence, negotiates baud rate, then
     /// reads the telegram at the higher baud rate.
-    pub fn read(&mut self) -> Result<MeterReading> {
+    pub fn read(&mut self, interval: Duration) -> Result<MeterReading> {
         if self.first_read_primed {
             self.first_read_primed = false;
             info!(
@@ -62,8 +62,8 @@ impl MeterConnection {
             let reader = BufReader::new(&mut *self.port);
             read_telegram(reader, &self.device_id, true)
         } else {
-            // Give the meter time to finish processing before the next request
-            std::thread::sleep(Duration::from_secs(1));
+            // Wait for the configured interval before the next request
+            std::thread::sleep(interval);
 
             // Switch back to 300 baud for the init sequence
             if self.negotiated_baud != BAUD_RATE {
