@@ -31,6 +31,6 @@ pub struct Config {
     pub port: Option<String>,
 
     /// Serial read timeout in seconds
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 30)]
     pub timeout_secs: u64,
 }
